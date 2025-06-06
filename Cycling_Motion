@@ -1,0 +1,160 @@
+(* GLOBAL variables declarations *)
+VAR_GLOBAL
+  
+ (* STRUCTs *)
+ Axis : AXIS_REF ;
+
+ (* Function blocks *)
+ MC_DriveStatus_inst : MC_ReadDriveStatus ;
+ MC_Status_inst : MC_ReadStatus ;
+ MC_Power_inst : MC_Power ;
+
+ (* DINTs *)
+ ActPos : DINT ;
+ ActVel : DINT ;
+ CmdPos : DINT ;
+ CmdVel : DINT ;
+ VelFindMicro : DINT := -4096 ;
+ VelOutMicro : DINT := 2048 ;
+ HomePosition : DINT := 0;
+ VelJog : DINT := 8192 ;
+ Move1Pos : DINT := 81920 ;
+ Move1Vel : DINT := 4096 ;
+ Move1Acc : DINT := 40960 ;
+ Move2Pos : DINT := 0 ;
+ Move2Vel : DINT := 8192 ;
+ Move2Acc : DINT := 40960 ;
+ EmgDeceleration : DINT := 409600;
+
+ (* INTs *)
+ HomeMode : INT := 5 ;
+ iStep : INT := 0 ;
+
+ (* BOOLs *)
+ Reset : BOOL := FALSE ;
+ Stop : BOOL := FALSE ;
+ StartMove : BOOL := TRUE ;
+ Move1Done : BOOL := 0 ;
+ Move2Done : BOOL := FALSE;
+ err : BOOL ;
+ MC_Move1_inst : MC_MoveAbsolute ;
+ MC_Move2_inst : MC_MoveAbsolute ;
+END_VAR
+
+PROGRAM main
+VAR
+ MC_Start_inst : MC_Start ;
+ MC_Reset_inst : MC_Reset ;
+ MC_ReadActPos_inst : MC_ReadActualPosition ;
+ MC_ReadPos_inst : MC_ReadCommandPosition ;
+ MC_Home_inst : MC_Home;
+ MC_Stop_inst : MC_Stop ;
+END_VAR
+
+Axis.Num := MC_REF_AXIS_MAIN ;
+
+(* Starts the axis management by IEC program *)
+MC_Start_inst(Execute:=1);
+
+(* Reads the status of the drive *)
+MC_DriveStatus_inst(Axis:= Axis,
+ Enable := MC_Start_inst.Done);
+
+(* Switch on - Switch off *)
+MC_Power_inst(Axis:=Axis, 
+ Enable:= MC_DriveStatus_inst.ReadyToSwitchOn) ;
+
+(* Reads the status of the axis *)
+MC_Status_inst(Axis:= Axis, Enable := MC_Start_inst.Done);
+
+(* Reads the real and commanded positions *)
+MC_ReadPos_inst(Axis:=Axis, Enable:= TRUE,
+ Position=>CmdPos,
+ Velocity=>CmdVel);
+MC_ReadActPos_inst(Axis:=Axis, Enable:=TRUE,
+ Position=>ActPos,
+ Velocity=>ActVel);
+
+(* Recovers from an error *)
+IF (MC_Status_inst.ErrorStop = 1) AND Reset THEN
+ MC_Reset_inst(Axis:=Axis, Execute:=0) ;
+ MC_Reset_inst.Execute := 1 ;
+ iStep := 0 ;
+END_IF;
+
+MC_Reset_inst(Axis:=Axis) ;
+(* Stops movement *)
+IF Stop THEN
+ MC_Stop_inst(Axis:=Axis, Execute :=0);
+ MC_Stop_inst.Execute := 1 ;
+ iStep := 0 ;
+END_IF;
+
+MC_Stop_inst(Axis:= Axis,
+ Deceleration:= Move1Acc ) ;
+
+CASE iStep OF
+ 0 :
+ (* Homing procedure *)
+ MC_Home_inst.Execute := 0 ;
+ MC_Move1_inst.Execute := 0;
+ MC_Move2_inst.Execute := 0;
+ IF StartMove AND MC_Power_inst.Status THEN
+ MC_Home_inst.Execute := 1 ;
+ StartMove := 0 ;
+ iStep := 1 ;
+ END_IF;
+
+ 1 : 
+ (* At the end of the homing, starts the Position movements *)
+ IF MC_Home_inst.Done THEN
+ MC_Move1_inst.Execute := 1;
+ iStep := 2 ;
+ END_IF;
+
+ 2 :
+ IF MC_Move1_inst.Done THEN
+ MC_Move1_inst.Execute := 0 ;
+ MC_Move2_inst.Execute := 1 ;
+ ELSE
+ IF MC_Move2_inst.Done THEN
+ MC_Move1_inst.Execute := 1 ;
+ MC_Move2_inst.Execute := 0 ;
+ END_IF;
+ END_IF;
+END_CASE ;
+
+(* Manages the homing procedure *)
+MC_Home_inst(Axis := Axis,
+ Position:=0,
+ HomingMode:= 5,
+ VelocitySearchSwitch:=VelFindMicro,
+ VelocitySearchZero:=VelOutMicro);
+
+(* Executes a continuous Move1Pos -> Move2Pos -> Move1Pos movement *)
+MC_Move1_inst(Axis:=Axis,
+ Position:=Move1Pos,
+ Velocity:=Move1Vel,
+ Acceleration:= Move1Acc,
+ Deceleration:=Move1Acc);
+MC_Move2_inst(Axis:=Axis,
+ Position:=Move2Pos,
+ Velocity:=Move2Vel,
+ Acceleration:= Move2Acc,
+ Deceleration:=Move2Acc);
+END_PROGRAM
+
+(* Exception management *)
+PROGRAM exception
+ VAR
+ MC_EmergencyStop_inst : MC_EmergencyStop ;
+ END_VAR
+   
+ (* Stops the movement because the program has had an error *)
+ MC_EmergencyStop_inst(Axis:= Axis,
+ Execute:=0) ;
+ MC_EmergencyStop_inst(Axis:= Axis,
+ Execute:=1,
+ Deceleration:= EmgDeceleration ) ;
+ err:=1 ;
+END_PROGRAM
